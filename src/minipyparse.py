@@ -10,9 +10,12 @@ U = TypeVar('U')
 PF = Callable[[Sequence[S],int],Iterable[Tuple[int,T]]]
 
 L = Optional[Tuple[T,'L[T]']]
-def fromL(xs:L[T]) -> List[T]:
+def flatten(xs:L[T]) -> List[T]:
 	return [n for ns in [xs] for _ in itertools.takewhile(
 		lambda _: ns, itertools.count()) if ns for n, ns in [ns]]
+def flattenT(xs:L[T]) -> Tuple[T,...]:
+	return tuple(n for ns in [xs] for _ in itertools.takewhile(
+		lambda _: ns, itertools.count()) if ns for n, ns in [ns])
 
 class P(Generic[S,T]):
 	f: PF[S,T] = lambda s, n: []
@@ -40,20 +43,23 @@ class P(Generic[S,T]):
 		return P(lambda s, n: next(([r] for r in self.f(s, n)), []))
 	def alter(self, p:P[S,U]) -> P[S,Union[T,U]]:
 		return P(lambda s, n: itertools.chain(self.f(s, n), p.f(s, n)))
-	def maybe(self) -> P[S,Optional[T]]:
-		return self.alter(P.pure(None))
-	def many(self) -> P[S,L[T]]:
-		return self.some().maybe()
-	def some(self) -> P[S,L[T]]:
-		return P.fix(lambda p: self.bind(lambda x: p.alter(P.pure(None)).fmap(lambda ys: (x, ys))))
 	@staticmethod
 	def seq(*xs:P[S,T]) -> P[S,L[T]]:
 		return functools.reduce(lambda p, x:
 			x.bind(lambda a: p.fmap(lambda b: (a, b))), reversed(xs), P.pure(None))
+	def maybe(self, default:U=cast(Any,None)) -> P[S,Union[T,U]]:
+		return self.alter(P.pure(default))
+	def many(self) -> P[S,list[T]]:
+		return self.some().alter(P.pure([]))
+	def some(self) -> P[S,list[T]]:
+		return cast(P[S,L[T]], P.fix(lambda p: self.bind(lambda x:
+			p.alter(P.pure(None)).fmap(lambda ys: (x, ys))))).fmap(flatten)
+	def filter(self, p:Callable[[T],bool]) -> P[S,T]:
+		return P(lambda s, n: ((i, a) for i, a in self.f(s, n) if p(a)))
 	def skip(self, k:int) -> P[S,T]:
 		return P(lambda s, n: ((i + k, a) for i, a in self.f(s, n)))
-	def lex(self:P[str,T], force:bool=False) -> P[str,T]:
-		return self.before([P.many, P.some][force](P.single(str.isspace)))
+	def lex(self:P[str,T], some:bool=False) -> P[str,T]:
+		return self.before([P.many, P.some][some](P.single(str.isspace)))
 	@staticmethod
 	def pred(f:Callable[[Sequence[S],int],Optional[Tuple[int,T]]]):
 		return P(lambda s, n: [(n + i, a) for r in [f(s,n)] if r for i, a in [r]])
@@ -61,8 +67,6 @@ class P(Generic[S,T]):
 	def single(f:Union[S,Callable[[S],bool]]) -> P[S,S]:
 		return next(P(lambda s, n: [(n + 1, s[n])] if n < len(s) and p(s[n]) else [])
 			for p in [f if callable(f) else lambda x: f == x])
-	def flat(self:P[S,L[T]]) -> P[S,list[T]]:
-		return self.fmap(fromL)
 	@staticmethod
 	def chunk(s:Sequence[S]) -> P[S,L[S]]:
 		return P.seq(*map(lambda c: P.single(lambda x: x == c), s))
