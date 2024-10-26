@@ -76,6 +76,9 @@ class P(Generic[S,T]):
 		return P(lambda s, n: ((i + k, a) for i, a in self.f(s, n)))
 	def lex(self:P[str,T], some:bool=False) -> P[str,T]:
 		return self.before([P.many, P.some][some](P.single(str.isspace)))
+	def parse(self, s, i=0, just=False):
+		return (x[-1] if just else x for x in self.f(s, i))
+
 	@staticmethod
 	def pred(f:Callable[[Sequence[S],int],Optional[Tuple[int,T]]]):
 		return P(lambda s, n: [(n + i, a) for r in [f(s,n)] if r for i, a in [r]])
@@ -100,8 +103,6 @@ class P(Generic[S,T]):
 	@staticmethod
 	def fix(f:Callable[[P[S,T]], P[S,T]]) -> P[S,T]:
 		return next(p for p in [cast('P[S,T]', P())] for q in [f(p)] for p.f in [q.f])
-	def parse(self, s, i=0, just=False):
-		return (x[-1] if just else x for x in self.f(s, i))
 
 	@overload
 	@staticmethod
@@ -399,6 +400,21 @@ class P(Generic[S,T]):
 	def apply(f, *xs): # type: ignore
 		return P.seq(*xs).fmap(lambda ns: f(*ns))
 
+	@overload
+	def sepby(self, other:P[S,U], *, keep:Literal[True],
+		end:bool=False, some:bool=False) -> P[S,List[Union[T,U]]]: ...
+	@overload
+	def sepby(self, other:P[S,U], *, keep:Literal[False],
+		end:bool=False, some:bool=False) -> P[S,List[T]]: ...
+	def sepby(self, other:P[S,U], *, keep:bool=False, end:bool=False, some:bool=False):
+		return next(p if some else p.alter(P.pure([]))
+			for m in [cast(P[S,List[Union[T,U]]], P.apply(
+				(lambda b, c: [b, c]) if keep else (lambda b, c: [c]), other, self))]
+			for p in [P.apply(lambda x, y, z: list(itertools.chain(cast(Any, [x]),
+				itertools.chain.from_iterable(y), z)),
+				self, m.many(), other.fmap(lambda x: [x]).maybe([]) if end else P())])
+
+	def __neg__    (self): return self.maybe()
 	def __pos__    (self): return self.some()
 	def __invert__ (self): return self.many()
 	def __pow__    (self, n): return self.replace(n)
