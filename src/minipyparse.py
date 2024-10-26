@@ -426,41 +426,42 @@ def minify() -> str:
 	import ast
 	with open(__file__) as file:
 		body = ast.parse(file.read()).body
-	cls = next(item for item in body
-		if isinstance(item, ast.ClassDef) and item.name == 'P')
-	items: dict[str,ast.expr] = {}
-	for item in cls.body:
-		if isinstance(item, ast.AnnAssign):
-			assert isinstance(item.target, ast.Name)
-			assert item.value is not None
-			items[item.target.id] = item.value
-		elif isinstance(item, ast.FunctionDef):
-			assert len(item.body) == 1
-			assert isinstance(item.body[0], ast.Return)
-			def untype(arg):
-				if isinstance(arg, list):
-					for x in arg: untype(x)
-				elif isinstance(arg, ast.arg) and hasattr(arg, 'annotation'):
-					arg.annotation = None
-			for k, v in vars(item.args).items(): untype(v)
-			item.returns = None
-			assert item.body[0].value is not None
-			items[item.name] = functools.reduce(
-				lambda x, f: ast.Call(f, [x], []),
-				item.decorator_list,
-				cast(ast.expr, ast.Lambda(item.args, item.body[0].value)))
-		else: assert False
-	parts: list[str] = []
-	for item in body:
-		if isinstance(item, ast.FunctionDef) and item.name == 'fromL':
-			assert len(item.body) == 1
-			assert isinstance(item.body[0], ast.Return)
-			assert item.body[0].value is not None
-			parts.extend(['fromL=',
-				ast.unparse(ast.Lambda(item.args, item.body[0].value))])
-	parts.append('\nP=type("P",(object,),{')
-	for k, v in items.items():
-		parts.extend([repr(k), ':', ast.unparse(v), ','])
-	if len(parts) >= 2: parts.pop()
-	parts.append('})')
-	return re.sub(r' ?([()\[\]{},:<>+=]) ?', r'\1', ''.join(parts)).replace('self','Z')
+	class Rewrite(ast.NodeTransformer):
+		def visit_Call(self, node:ast.Call):
+			if isinstance(node.func, ast.Name) and node.func.id == 'cast':
+				assert len(node.args) == 2 and not len(node.keywords)
+				return self.generic_visit(node.args[1])
+			return self.generic_visit(node)
+		def visit_AnnAssign(self, node:ast.AnnAssign):
+			assert isinstance(node.target, ast.Name) and node.value is not None
+			return self.generic_visit(ast.Assign([node.target], node.value))
+		def visit_FunctionDef(self, node:ast.FunctionDef):
+			if any(isinstance(expr, ast.Name) and expr.id == 'overload'
+				for expr in node.decorator_list): return None
+			assert len(node.body) == 1 and isinstance(node.body[0], ast.Return) \
+				and node.body[0].value is not None
+			return self.generic_visit(ast.Assign([ast.Name(node.name)],
+				ast.Lambda(node.args, node.body[0].value)))
+		def visit_ClassDef(self, node:ast.ClassDef):
+			body: List[ast.Assign] = [x for item in node.body
+				for x in [self.visit(item)] if x is not None]
+			assert all(isinstance(x, ast.Assign) and len(x.targets) == 1 for x in body)
+			return ast.Assign([ast.Name(node.name)], ast.Call(ast.Name('type'),
+				[ast.Constant(node.name), ast.Tuple([ast.Name("object")]), ast.Call(ast.Name('dict'),
+					[], [ast.keyword(cast(ast.Name, x.targets[0]).id, x.value) for x in body])], []))
+		def visit_arg(self, node:ast.arg):
+			return ast.arg(node.arg)
+	parts: str = '\n'.join(ast.unparse(
+		ast.fix_missing_locations(Rewrite().visit(item))) for item in body
+		if (isinstance(item, ast.FunctionDef) and item.name == 'flatten')
+		or (isinstance(item, ast.ClassDef) and item.name == 'P'))
+	return re.sub(r' ?([()\[\]{},:<>+=]) ?', r'\1', parts).replace('self','Z')
+
+if __name__ == '__main__':
+	print(minify())
+	d: dict[str,Any] = {}
+	exec(minify(), d)
+	print(d['P'])
+
+__all__ = ('P', 'minify')
+
